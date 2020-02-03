@@ -1,0 +1,21 @@
+{
+  "name": "neon-talk",
+  "version": "0.1.0",
+  "description": "",
+  "main": "src/bench.js",
+  "author": "K.J. Valencik <kjvalencik@gmail.com>",
+  "license": "MIT",
+  "dependencies": {
+    "benchmark": "^2.1.4",
+    "body-parser": "^1.19.0",
+    "express": "^4.17.1",
+    "neon-cli": "^0.3.3"
+  },
+  "scripts": {
+    "bench": "node .",
+    "build": "neon build",
+    "install": "neon build --production",
+    "start": "node src/server.js",
+    "test": "echo 'No Tests'"
+  }
+}

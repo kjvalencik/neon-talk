@@ -1,0 +1,10 @@
+target
+native/index.node
+native/artifacts.json
+**/*~
+**/node_modules
+**/.DS_Store
+
+docs/_site
+docs/.sass-cache
+docs/.jekyll-metadata
