@@ -1,3 +1,2 @@
 baseurl: /neon-talk
-
-theme: jekyll-theme-cayman
+theme: minima
