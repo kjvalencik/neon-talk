@@ -2,15 +2,15 @@
 
 function clearStride(sieve, from, stride) {
    for (let i = from; i < sieve.length; i += stride) {
-       sieve[i] = false;
+       sieve[i] = 0;
    }
 }
 
 function sieve(max) {
-    const sieve = (new Array(max / 2)).fill(true);
+    const sieve = (new Array(max / 2)).fill(1);
     let i = 0;
 
-	sieve[0] = false; // 1 is not prime
+	sieve[0] = 0; // 1 is not prime
 
     while (++i) {
 		if (sieve[i]) {
@@ -21,7 +21,7 @@ function sieve(max) {
 				break;
             }
 
-			clearStride(sieve, Math.floor(pp / 2), p);
+			clearStride(sieve, (pp / 2) | 0, p);
 		}
     }
 
