@@ -28,8 +28,7 @@ ab \
     -n 1000 \
     -p "$temp_file" \
     -T 'application/json' \
-    "${BASE_URL}/api/sync" 2>&1 |
-grep 'Requests per second'
+    "${BASE_URL}/api/sync" 2>&1 #|grep 'Requests per second'
 
 echo -n "Async Results: "
 
@@ -38,5 +37,4 @@ ab \
     -n 1000 \
     -p "$temp_file" \
     -T 'application/json' \
-    "${BASE_URL}/api/async" 2>&1 |
-grep 'Requests per second'
+    "${BASE_URL}/api/async" 2>&1 #|grep 'Requests per second'

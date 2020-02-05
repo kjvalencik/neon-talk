@@ -3,14 +3,6 @@ use rayon::prelude::*;
 
 const CHUNK_SIZE: usize = 100_000;
 
-fn clear_stride(slice: &mut [bool], from: usize, stride: usize) {
-	let slice = &mut slice[from..];
-
-	for x in slice.iter_mut().step_by(stride) {
-		*x = false;
-	}
-}
-
 fn sieve_serial(max: usize) -> Vec<bool> {
 	let mut sieve = vec![true; max / 2];
 
@@ -23,7 +15,10 @@ fn sieve_serial(max: usize) -> Vec<bool> {
 			if pp >= max {
 				break;
 			}
-			clear_stride(&mut sieve, pp / 2, p);
+
+			for x in sieve.iter_mut().skip(pp / 2).step_by(p) {
+				*x = false;
+			}
 		}
 	}
 	sieve
@@ -48,7 +43,9 @@ fn update_chunk(low: &[bool], chunk: &mut [bool], base: usize) {
 			};
 
 			if pm < max {
-				clear_stride(chunk, (pm - base) / 2, p);
+				for x in chunk.iter_mut().skip((pm - base) / 2).step_by(p) {
+					*x = false;
+				}
 			}
 		}
 	}
@@ -63,6 +60,7 @@ pub fn sieve(max: usize) -> impl Iterator<Item = usize> {
 
 	{
 		let (low, high) = sieve.split_at_mut(small_max / 2);
+
 		high.par_chunks_mut(CHUNK_SIZE)
 			.enumerate() // to figure out where this chunk came from
 			.with_max_len(1) // ensure every single chunk is a separate rayon job

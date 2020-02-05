@@ -7,7 +7,7 @@ function clearStride(sieve, from, stride) {
 }
 
 function sieve(max) {
-    const sieve = (new Array(max / 2)).fill(1);
+    const sieve = (new Array((max / 2) | 0)).fill(1);
     let i = 0;
 
 	sieve[0] = 0; // 1 is not prime

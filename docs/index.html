@@ -9,6 +9,621 @@ title: Neon modules for Node
 
 > Write safe, fast native modules for Node with **Rust**.
 
+.center[
+![]({{ site.baseurl}}/assets/qrcode_slides.png)
+
+Slides
+]
+
+.right[K.J. Valencik]
+
+???
+* Briefly introduce yourself and the talk
+* Details on what Neon is will come later
+
 ---
 
 # What is Rust?
+
+> _A language empowering everyone to build reliable and efficient software._
+
+* Performance. Fast and memory efficient with no garbage collector.
+* Reliability. Rich type system and ownership model guarantees memory and thread safety.
+* Productivity. High level, modern language.
+* Zero-cost abstractions
+* Created by Mozilla and powers Firefox servo components
+* Fearless concurrency!
+
+.center[![]({{ site.baseurl}}/assets/rust-logo.svg)]
+
+???
+* Focus on why Mozilla created it
+* Point out that it's already being used in browsers
+* Quickly compare to C/C++
+* Talk about WASM later
+
+---
+
+## What is Neon?
+
+Neon is a library and toolchain for embedding Rust in your Node.js apps
+and libraries. It makes writing native modules in Node.js _safe_ and **easy**.
+
+#### Created by Dave Herman
+
+* ECMAScript Module Specification Author
+* TC39 Member
+* Creator of `Volta` JavaScript launcher
+
+#### Core Maintainers
+
+* Dave Herman
+* K.J. Valencik (me!)
+
+???
+* Native modules are typically written in C++
+* Project is actively developed and maintained
+
+---
+
+# Use Cases
+
+## CPU bound tasks
+
+> Find the count of prime numbers less than `N`.
+
+## Algorithm
+
+Initialize an Array of size `N` and use the Sieve of Eratosthenes to filter out
+non-primes. Count the remaining numbers.
+
+???
+* Invented use case to provide simple code that is bound by CPU
+* Don't spend too much time on the specifics of the algorithm
+
+---
+
+## Sieve of Eratosthenes: Javascript
+
+```js
+function sieve(max) {
+    const sieve = (new Array((max / 2) | 0)).fill(1);
+    let i = 0;
+ 
+    sieve[0] = 0; // 1 is not prime
+ 
+    while (++i) {
+        if (sieve[i]) {
+            const p = 2 * i + 1;
+            const pp = p * p;
+ 
+            if (pp >= max) {
+                break;
+            }
+ 
+            for (let i = (pp / 2) | 0; i < sieve.length; i += p) {
+                sieve[i] = 0;
+            }
+        }
+    }
+ 
+    return sieve;
+}
+ 
+function countPrimes(max) {
+    return sieve(max).reduce((y, x) => y + x, 0);
+}
+```
+
+???
+* Naive implementation of counting primes
+* Somewhat optimized javascript implementation
+
+---
+
+## Sieve of Eratosthenes: Rust
+
+
+```rs
+fn sieve(max: usize) -> Vec<bool> {
+	let mut sieve = vec![true; max / 2];
+
+	sieve[0] = false; // 1 is not prime
+
+	for i in 1.. {
+		if sieve[i] {
+			let p = 2 * i + 1;
+			let pp = p * p;
+
+            if pp >= max {
+				break;
+            }
+            
+            for x in sieve.iter_mut().skip(pp / 2).step_by(p) {
+                *x = false;
+            }
+		}
+	}
+
+    sieve
+}
+
+fn count_primes(max: usize) -> usize {
+	sieve(max).into_iter()
+        .fold(0, |y, x| if x { y + 1 } else { y })
+}
+```
+
+???
+* Same algorithm in Rust
+* About the same amount of code
+* Point out functional features
+* Does not include more complex parallelized version
+
+---
+
+## Neon Bindings
+
+```rs
+fn count_primes(mut cx: FunctionContext) -> JsResult<JsNumber> {
+	let max = cx.argument::<JsNumber>(0)?.value() as usize;
+	let count = sieve::sieve(max).count();
+
+	Ok(cx.number(count as f64))
+}
+
+register_module!(mut cx, {
+	cx.export_function("countPrimes", count_primes)?;
+
+	Ok(())
+});
+```
+
+* Binding code is minimal, macros remove boilerplate
+* Type-safe. Downcasting is required to get a concrete type from a `JsValue`.
+* Rust errors are handled with `Result` enumerations instead of exceptions
+
+???
+* Small amount of code for binding
+* _Must_ handle types; no implicit coercion
+* Macro is provided by `neon`
+
+---
+
+## Benchmark Counting Primes
+
+```js
+const { Suite } = require('benchmark');
+
+const { countPrimes } = require('../native');
+const countPrimesJs = require('./sieve');
+
+const MAX_PRIME = 10 ** 6;
+
+const suite = (new Suite())
+    .add('Javascript', () => countPrimesJs(MAX_PRIME))
+    .add('Rust', () => countPrimes(MAX_PRIME))
+    .on('cycle', event => console.log(String(event.target)))
+    .on('complete', () => {
+        console.log(`Fastest is ${suite.filter('fastest').map('name')}`);
+    })
+    .run({ 'async': true });
+```
+
+```sh
+$ npm run bench
+
+Javascript x 74.57 ops/sec ±1.22% (74 runs sampled)
+Rust x 628 ops/sec ±4.73% (78 runs sampled)
+Fastest is Rust
+```
+
+8x speed improvement!
+
+???
+* No optimization and about the same amount of code is 8x faster
+* A bit unfair since math leans heavily on Rust's strengths
+    and JS weaknesses
+
+---
+
+# Improving the Rust
+
+* CPU bound task blocks the event loop
+* Rust supports efficient threading and safe memory sharing
+
+## Multi-threading
+
+* Rayon library provides work-stealing algorithm for multi-threaded iterators
+* Small modifications to the algorithm are made to chunk the work
+* 20-30% speed-up on large primes
+* -10% to 0% on small primes.
+
+```diff
+- data.iter().for_each(|_| {})
++ data.par_iter().for_each(|_| {})
+```
+
+???
+* Onwership model makes concurrency safe and easy
+* Fearless concurrency!
+* Mozilla was able to parallelize parts of Firefox successfully in Rust
+    where they had failed with C++ _multiple_ times
+
+---
+
+## Async Tasks
+
+Node.js provides a `libuv` threadpool for performing blocking operations.
+This is used internally by many built-in methods (e.g., dns lookups).
+
+Neon can schedule tasks to run on the `libuv` pool by implementing the `Task` trait.
+
+```rs
+fn count_primes_async(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+	let max = cx.argument::<JsNumber>(0)?.value() as usize;
+	let cb = cx.argument::<JsFunction>(1)?;
+
+    // Schedule the task to run asynchronously on the `libuv` pool
+	(CountPrimesTask { max }).schedule(cb);
+
+	Ok(cx.undefined())
+}
+
+register_module!(mut cx, {
+	cx.export_function("countPrimesSync", count_primes)?;
+	cx.export_function("countPrimesAsync", count_primes_async)?;
+
+	Ok(())
+});
+```
+
+???
+* Implementation to come later
+* These are node style `function (err, data)` callbacks
+* Easily converted to a promise with `util.promisify(fn)`
+* Small amounts of JS glue code is typical and idiomatic Neon
+
+---
+
+# Concurrency vs. Parallelism
+
+The `countPrimesAsync` method is both _concurrent_ **and** _parallel_.
+
+* Executed on the `libuv` pool, other operations may run concurrently
+* `rayon` executes the algorithm in parallel across multiple CPU
+
+## Benchmark
+
+The benckmark is execute `4` prime counts concurrently.
+
+```sh
+$ npm run bench
+Javascript x 10.12 ops/sec ±9.33% (30 runs sampled)
+Rust Sync x 116 ops/sec ±5.87% (55 runs sampled)
+Rust Async x 127 ops/sec ±5.14% (60 runs sampled)
+Fastest is Rust Async
+```
+
+The asynchronous version is fastest because there are critical sections of the
+algorithm that are **not** parallel. Concurrency allows for maximum use of the
+CPU during this time.
+
+???
+* Show the results first, implementation next
+* Briefly diverge to explain the difference between concurrent and parallel
+* Sync version is parallel, but not concurrent
+* The async version is fast because it's both
+
+---
+
+## Task Trait Implementation
+
+```rs
+struct CountPrimesTask { max: usize }
+
+impl Task for CountPrimesTask {
+	type Output = usize;
+	type Error = ();
+	type JsEvent = JsNumber;
+
+	fn perform(&self) -> Result<Self::Output, Self::Error> {
+		Ok(sieve::sieve(self.max).count())
+	}
+
+	fn complete(
+		self,
+		mut cx: TaskContext,
+		result: Result<Self::Output, Self::Error>,
+	) -> JsResult<Self::JsEvent> {
+		let count = match result {
+			Ok(count) => count,
+			Err(_) => {
+				return cx.throw_error("Unreachable error in CountPrimesTask")
+			}
+		};
+
+		Ok(cx.number(count as f64))
+	}
+}
+```
+
+???
+* `perform` happens on a separate `libuv` thread
+* `complete` happens on the main js thread (blocking) 
+
+---
+
+# Use Case: Middleware
+
+Serializing complex data-structures across the FFI boundary can be expensive.
+However, when writing server middleware we can often defer this serialization
+and work directly with buffers.
+
+```js
+const express = require('express');
+const bodyParser = require('body-parser');
+
+const app = express();
+
+// Instead of `bodyParser.json()`, collect the body as a buffer but
+// do not deserialize.
+app.use(bodyParser.raw({
+    type: 'application/json'
+}));
+```
+
+By collecting request bodies (and responses) into buffers, we can efficiently
+move the data to and from Neon.
+
+???
+* Best results if limit the amount of serialization
+* Express can pass bodies serialized
+
+---
+
+## Rust Serialization
+
+The `serde` crate provides fast and easy serialization.
+
+```rs
+#[derive(Debug, Deserialize)]
+struct CountPrimesRequest {
+	max: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct CountPrimesResponse {
+	count: usize,
+}
+
+let req: CountPrimesRequest = serde_json::from_slice(body)?;
+let res = serde_json::to_vec(&CountPrimesResponse { count })?;
+```
+
+Serde operates on byte slices (`&[u8]`).
+
+???
+* Briefly diverge on how JSON is handled in Rust
+* Strongly typed vs. dynamically typed
+* Serde is awesome
+* Mention that Rust prefers things in userland and to keep the standard library
+    small
+* Sometimes community crates are pulled into standard (e.g., hashbrown)
+
+---
+
+## Neon Buffers
+
+Neon provides a zero-copy view into `Buffer` as byte slices.
+
+```rs
+// Grab a slice to the backing bytes of a buffer
+let req = cx.argument::<JsBuffer>(0)?;
+let body = cx.borrow(&req, |buf| buf.as_slice());
+
+// Create a new buffer and copy bytes in from a slice
+let buf = cx.buffer(res.len() as u32)?;
+
+cx.borrow(&buf, |buf| buf.as_mut_slice().copy_from_slice(&res));
+```
+
+References to Js buffers cannot be safely sent across threads since
+they could be modified or freed once the VM is resumed.
+
+This presents a trade-off between memory usage and concurrency. It is more
+efficient to immediately operate on the buffer, but, we can copy the bytes
+with `.to_vec()` to more quickly resume v8.
+
+???
+* Buffers are backed by contiguous chunks of memory
+* It's safe to directly access these bytes from Rust
+* Very lightweight, common pattern in C++ native modules as well
+
+---
+
+## Errors
+
+Working in an expressive, type-safe language can provide better error
+handling for free.
+
+```sh
+$ curl -s -XPOST -H 'Content-Type: application/json' -d'{}' \
+    localhost:3000/api/async | jq .
+{
+  "name": "Error",
+  "message": "missing field `max` at line 1 column 2"
+}
+```
+
+???
+* Example of why strong typing is good
+* JS middleware requires explicit handling of bad requests
+* Rust version gets this from the type definitions
+
+---
+
+## Benchmark: Express Middleware
+
+Wiring it all together we create a Neon `Task` that accepts a request body
+as a `Vec<u8>` and returns a response body as a `Vec<u8>`.
+
+```js
+app.post('/api/async', bufferBodyParser, ({ body }, res, next) => {
+    countPrimesMiddleware(body, (err, buf) => {
+        if (err) return next(err);
+        res.type('application/json').send(buf);
+    });
+});
+```
+
+Testing latency with Apache Bench
+
+```sh
+$ ab -c 10 -n 1000 -p "request.json" -T 'application/json' \
+    "http://localhost/api/async"
+
+# Javascript
+Requests per second:    70.26 [#/sec] (mean)
+
+              min  mean[+/-sd] median   max
+Total:         36  142  12.3    141     257
+
+# Rust
+Requests per second:    653.65 [#/sec] (mean)
+              min  mean[+/-sd] median   max
+Total:          5   15   4.4     15      37
+```
+
+???
+* Rust version is faster
+* Rust version also has lower standard deviation
+* No blocking the event loop prevents large maximums
+
+---
+
+# Real World Use Case
+
+Service for handling high volume callback.
+
+* `POST` callback with Avro encoded body
+* Verify body with RSA signature
+* Transform message and serialize to Protobuf
+* Publish message to Kafka
+
+Handles a consistent about 60k RPM. Previous node.js version needed
+to be scaled to many instances and had a high error rate. Large spikes in
+latency also required additional scaling on the application initiating callbacks.
+
+### Neon Version
+
+* Handles more than 100k RPM on a single instance
+* Fast response times: 9ms median, 15ms 95th percentile, 30ms 99th percentile
+* 0% error rate
+* Leveraged existing APM integrations for Node.js services
+* Bottlenecked by OpenSSL RSA Public Key Verification
+
+???
+* Production application
+* Running for close to two years
+
+---
+
+## Real World Metrics
+
+.center[![]({{ site.baseurl}}/assets/real_world_metrics.png)]
+
+???
+* Variance in response time is mostly Kafka
+* Scaled to multiple instances for redundancy
+
+---
+
+# Other Use Cases
+
+* Electron Apps
+* Node.js as a scripting language in a Rust application
+* Integrating with the crates.io ecosystem
+* Controlling hardware devices and sensors
+
+???
+* Use cases from Neon slack channel
+* Many more
+
+---
+
+# WebAssembly vs. Neon
+
+## WASM
+
+* Binary instruction format for a stack-based virtual machine.
+* Compatible with browsers and Node.js runtime
+* First class support from Rust!
+* Config-free compilation and bundling with Parcel
+
+???
+* Support in browser and node
+* Not just transpiling
+* Rust is using wasm to speed up Rust compilations (macros)
+
+---
+
+# WebAssembly vs. Neon
+
+## Neon
+
+* Compatible with entire crates.io ecosystem
+* Access to low-level system and hardware
+* Alternative to C and C++ native modules
+* Parallelism
+
+???
+* WASM and Neon are orthogonal
+* Space for both exists
+* Some use cases lend themselves to one or the other
+
+---
+
+# Future: WebAssembly System Interface
+
+The proposed WASI standard will provide access to OS features including files,
+sockets, and clocks. This extension to WASM will allow for use cases that currently
+require a native module.
+
+???
+* May close the gap between WASM and Neon
+* Very nascent
+
+---
+
+# Neon Roadmap
+
+* N-API port. ABI compatible interface will allow compiled modules to
+    work across node.js versions.
+* Schedule API stabalization. Call back into the V8 VM from a Rust thread.
+* Contributors welcome! Friendly community with no prior Rust experience necessary!
+
+???
+* Contributors
+* Slack
+* Helpful and inclusive
+
+---
+
+# Thanks!
+
+### Questions?
+
+.center[
+![]({{ site.baseurl}}/assets/qrcode_repo.png)
+
+Github Repository with code samples, benchmarks, and slides.
+
+https://github.com/kjvalencik/neon-talk
+
+![]({{ site.baseurl}}/assets/qrcode_repo.png)
+
+Neon
+
+https://github.com/neon-bindings/neon
+]
